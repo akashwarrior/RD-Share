@@ -1,3 +1,5 @@
+import { resolve } from "path";
+
 enum WebRTCEvents {
     "OFFER",
     "ANSWER",
@@ -41,7 +43,8 @@ export class WebRTCService {
 
 
     // Callbacks
-    private getMediaStreamCallback: ((id: number, stream: MediaStream) => void) | null = null
+    private onParticipantLeaveCallback: ((id: number) => void) | null = null
+    private getMediaStreamCallback: ((id: number, stream: MediaStream | null) => void) | null = null
     private getParticipantsCallback: ((participants: Participant) => void) | null = null
 
     // Singleton instance
@@ -89,7 +92,7 @@ export class WebRTCService {
         })
     }
 
-    public getMediaStreams(callback: (id: number, stream: MediaStream) => void): void {
+    public getMediaStreams(callback: (id: number, stream: MediaStream | null) => void): void {
         this.getMediaStreamCallback = callback;
     }
 
@@ -115,8 +118,20 @@ export class WebRTCService {
         })
     }
 
+    public onParticipantLeave(callback: (id: number) => void): void {
+        this.onParticipantLeaveCallback = callback
+    }
+
     public stopMediaStream(): void {
-        if (!this.peerConnection) return;
+        this.peerConnection.forEach((pc) => {
+            pc.getSenders().forEach((sender) => {
+                const track = sender.track;
+                if (track) {
+                    track.stop();
+                    pc.removeTrack(sender);
+                }
+            });
+        });
         this.stream?.getTracks().forEach(track => track.stop());
         this.stream = null;
     }
@@ -286,16 +301,18 @@ export class WebRTCService {
                 console.log("Sending negotiation request")
                 this.createOffer(pc, ({
                     type: WebRTCEvents.OFFER,
-                    from: -1,
+                    from: data.from,
                     to: data.from,
                     data: null,
                 }))
             }
         }
 
-        pc.ontrack = ({ streams }) => {
-            console.log("Received streams")
-            this.getMediaStreamCallback?.(data.to, streams[0]);
+        pc.ontrack = async ({ streams }) => {
+            streams[0].addEventListener("removetrack", (event) => {
+                this.getMediaStreamCallback?.(data.from, null);
+            });
+            this.getMediaStreamCallback?.(data.from, streams[0]);
         };
 
         pc.onicecandidate = ({ candidate }) => {
@@ -364,8 +381,9 @@ export class WebRTCService {
                     this.handleUserJoined(data);
                     break
                 case WebRTCEvents.USER_LEFT:
-                    // TODO: Handle user left event
-                    console.log("User left:", data.from)
+                    this.peerConnection.get(data.from)?.close()
+                    this.peerConnection.delete(data.from)
+                    this.onParticipantLeaveCallback && this.onParticipantLeaveCallback(data.from)
                     break;
                 case WebRTCEvents.DATA_MESSAGE:
                     this.handleDataMessage(data)
@@ -380,15 +398,25 @@ export class WebRTCService {
 
     private async handleOffer(data: Message): Promise<void> {
         try {
-            const pc = this.peerConnection.has(data.from) ? this.peerConnection.get(data.from)! : await this.setupPeerConnectionListeners(data)
-            this.getParticipantsCallback && this.getParticipantsCallback({
-                id: data.from,
-                name: data.name,
-                audio: null,
-                video: null,
-                screen: null,
-            })
-            console.log("Received offer")
+            let pc: RTCPeerConnection;
+            if (this.peerConnection.has(data.from)) {
+                pc = this.peerConnection.get(data.from)!;
+            } else {
+                pc = await this.setupPeerConnectionListeners(data);
+                this.getParticipantsCallback && this.getParticipantsCallback({
+                    id: data.from,
+                    name: data.name,
+                    audio: null,
+                    video: null,
+                    screen: null,
+                })
+            }
+
+            if (this.stream) {
+                this.stream.getTracks().forEach((track) => {
+                    pc.addTrack(track, this.stream!)
+                })
+            }
             await pc.setRemoteDescription(data.data)
 
             const answer = await pc.createAnswer({
@@ -432,18 +460,24 @@ export class WebRTCService {
     }
 
     private async handleUserJoined(data: Message): Promise<void> {
-        const pc = this.peerConnection.has(data.from) ? this.peerConnection.get(data.from) : await this.setupPeerConnectionListeners(data)
-        if (!pc) {
-            console.error("Peer connection not found")
-            return
+        let pc: RTCPeerConnection;
+        if (this.peerConnection.has(data.from)) {
+            pc = this.peerConnection.get(data.from)!;
+        } else {
+            pc = await this.setupPeerConnectionListeners(data);
+            this.getParticipantsCallback && this.getParticipantsCallback({
+                id: data.from,
+                name: data.name,
+                audio: null,
+                video: null,
+                screen: null,
+            })
         }
-        this.getParticipantsCallback && this.getParticipantsCallback({
-            id: data.from,
-            name: data.name,
-            audio: null,
-            video: null,
-            screen: null,
-        })
+        if (this.stream) {
+            this.stream.getTracks().forEach((track) => {
+                pc.addTrack(track, this.stream!)
+            })
+        }
         this.createOffer(pc, data)
     }
 

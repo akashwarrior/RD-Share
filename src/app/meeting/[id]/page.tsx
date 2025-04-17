@@ -76,19 +76,23 @@ export default function MeetingPage() {
 
     webRTCService.getMediaStreams((id, stream) => {
       setParticipants(prev => {
-        const participant = prev?.find(p => p.id === id);
-        if (participant) {
-          console.log("Participant already exists, updating stream");
-          participant.video = stream.getVideoTracks()[0];
-          participant.audio = stream.getAudioTracks()[0];
-          return [...prev];
-        }
-        return prev;
+        return prev?.map(participant => {
+          if (participant.id === id) {
+            participant.video = stream ? stream.getVideoTracks()[0] : stream;
+            participant.audio = stream ? stream.getAudioTracks()[0] : stream;
+          }
+          return participant;
+        })
       });
     });
 
     webRTCService.getParticipants((participants) => {
+      console.log("Participants", participants);
       setParticipants(prev => prev ? [...prev, participants] : [participants]);
+    });
+
+    webRTCService.onParticipantLeave((id) => {
+      setParticipants(prev => prev?.filter(participant => participant.id !== id));
     });
   }, [webRTCService]);
 
@@ -277,7 +281,7 @@ export default function MeetingPage() {
                 <div
                   key={participant.id}
                   // TODO: ADD BLUE BORDER WHEN AUDIO IS CURRENTLY PLAYING border-2 border-primary
-                  className={`relative rounded-lg overflow-hidden bg-muted border max-h-1/2 aspect-square lg:aspect-auto`}
+                  className={`relative rounded-lg overflow-hidden bg-muted border`}
                 >
                   {participant.video ? (
                     <div className="h-full w-full bg-gradient-to-br from-primary/5 to-transparent flex items-center justify-center">
@@ -286,7 +290,7 @@ export default function MeetingPage() {
                         playsInline
                         muted
                         ref={(video) => {
-                          if (video) {
+                          if (video && participant.video) {
                             const stream = new MediaStream();
                             stream.addTrack(participant.video!);
                             video.srcObject = stream;
